@@ -2,6 +2,8 @@ import express  from "express";
 import cors from "cors"
 import mysql from "mysql2";
 import "dotenv/config";
+import bcrypt, { compare } from "bcrypt"
+import  jwt  from "jsonwebtoken";
 const app = express();
 app.use(express.json());
 app.use(cors())
@@ -20,7 +22,30 @@ db.connect((err) => {
   console.log("Connected to MySQL");
 });
 
+const checkAuth = (req, res, next) => {
+  const authHeader = req.headers.authorization;
 
+  if (!authHeader) {
+    return res.status(401).json({
+      Message: "NO TOKEN AVAILABLE TO PROCEED",
+    });
+  }
+
+  const token = authHeader.split(" ")[1];
+
+  try {
+    const verify = jwt.verify(token, process.env.JWT_SECRET);
+    req.userId = verify.id;
+
+    next();
+  } catch (err) {
+    console.log("JWT ERROR:", err.message);
+
+    return res.status(401).json({
+      Message: err.message,
+    });
+  }
+};
 
 app.get("/", (req, res) => {
     res.send("App is running!")
@@ -30,9 +55,10 @@ app.listen(5000, () => {
     console.log("Server is running on port 5000");
 })
 
- app.get("/jobs", (req, res) => {
+app.get("/jobs", checkAuth, (req, res) => {
   db.query(
-    "SELECT id, company, role, location, skills, salary, experience, status, date_applied AS dateApplied FROM jobs",
+    "SELECT id, company, role, location, skills, salary, experience, status, date_applied AS dateApplied FROM jobs WHERE user_id = ?",
+    [req.userId],
     (err, results) => {
       if (err) {
         console.log(err);
@@ -48,36 +74,45 @@ app.listen(5000, () => {
  const validStatuses = ["Applied", "Interview", "Offer", "Rejected", "Accepted", "Waitlisted"];
 
  
-app.get("/jobs/stats",(req,res)=>{
-     db.query("SELECT status,count(*) AS total from jobs group by status;",(err,results)=>{
+app.get("/jobs/stats", checkAuth, (req, res) => {
+  db.query(
+    "SELECT status, count(*) AS total FROM jobs WHERE user_id = ? GROUP BY status",
+    [req.userId],
+    (err, results) => {
       if(err){
         return res.status(500).json({message:"Internal error from database"})
-      }    
-  res.status(200).json(results)
-      
-     })
+      }
+      res.status(200).json(results)
+    }
+  )
 })
 
-app.get("/jobs/:id", (req, res) => {
+app.get("/jobs/:id", checkAuth, (req, res) => {
   const id = parseInt(req.params.id);
   if (isNaN(id)){
     return res.status(400).json({message:"Invalid request"})
   }
-  db.query("SELECT id, company, role, location, skills, salary, experience, status,date_applied AS dateApplied from jobs WHERE ID = ?",[id],(err,results)=>{
-   if (err){
-   return res.status(500).json({message:"Internal error from database"})
-   }
-   else if (results.length === 0){
-   res.status(404).json({message:"Fill in the ID"})
-   }
-   else{
-    res.json(results[0])
-   }
-  })  
+
+  db.query(
+    "SELECT id, company, role, location, skills, salary, experience, status, date_applied AS dateApplied FROM jobs WHERE id = ? AND user_id = ?",
+    [id, req.userId],
+    (err, results) => {
+      if (err){
+        return res.status(500).json({message:"Internal error from database"})
+      }
+      else if (results.length === 0){
+        return res.status(404).json({message:"Fill in the ID"})
+      }
+      else{
+        res.json(results[0])
+      }
+    }
+  )
 })
 
-app.post("/jobs", (req, res) => {
+app.post("/jobs", checkAuth, (req, res) => {
   const { company, role, salary, location, experience, skills } = req.body;
+  const userId = req.userId;
 
   if (company === undefined || role === undefined || location === undefined || experience === undefined || skills === undefined) {
     return res.status(400).json({ message: "Fill required fields" });
@@ -88,8 +123,8 @@ app.post("/jobs", (req, res) => {
   }
 
   db.query(
-    "INSERT INTO jobs (company, role, location, skills, salary, experience) VALUES (?, ?, ?, ?, ?, ?)",
-    [company, role, location, skills, salary ?? null, experience],
+    "INSERT INTO jobs (user_id, company, role, location, skills, salary, experience) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    [userId, company, role, location, skills, salary ?? null, experience],
     (err, result) => {
       if (err) {
         console.log(err);
@@ -100,26 +135,33 @@ app.post("/jobs", (req, res) => {
   );
 });
 
-app.delete("/jobs/:id",(req,res)=>{
+app.delete("/jobs/:id", checkAuth, (req,res)=>{
   const id = parseInt(req.params.id);
-     if (isNaN(id)){
-  return res.status(400).json({message:"Bad request"})
-     }
-     db.query("DELETE FROM jobs WHERE id = ?",[id],(err,results)=>{
+
+  if (isNaN(id)){
+    return res.status(400).json({message:"Bad request"})
+  }
+
+  db.query(
+    "DELETE FROM jobs WHERE id = ? AND user_id = ?",
+    [id, req.userId],
+    (err,results)=>{
       if(err){
         console.log(err);
-    return    res.status(500).json({message:"Internal server error"})
+        return res.status(500).json({message:"Internal server error"})
       }
-     if (results.affectedRows === 0){
-          return res.status(404).json({message:"Id not found"})    
+
+      if (results.affectedRows === 0){
+        return res.status(404).json({message:"Id not found"})
       }
       else{
         res.status(200).json({message:"Job deleted"})
       }
-     })
+    }
+  )
 })
 
-app.put("/jobs/:id", (req, res) => {
+app.put("/jobs/:id", checkAuth, (req, res) => {
   const id = parseInt(req.params.id);
   const { company, role, salary, location, experience, skills, status } = req.body;
 
@@ -144,7 +186,7 @@ app.put("/jobs/:id", (req, res) => {
     return res.status(400).json({ message: "Nothing to update" });
   }
 
-  values.push(id);
+  values.push(id,req.userId);
     if (company !== undefined && (typeof company !== "string" || company.trim() === "" || company.length > 100)) {
     return res.status(400).json({ message: "Company must be 1 to 100 characters" });
   }
@@ -169,7 +211,7 @@ app.put("/jobs/:id", (req, res) => {
     return res.status(400).json({ message: "Experience must be a positive number" });
   }
 
-  db.query("UPDATE jobs SET " + fields.join(", ") + " WHERE id = ?", values, (err, result) => {
+  db.query("UPDATE jobs SET " + fields.join(", ") + " WHERE id = ? AND user_id = ?", values, (err, result) => {
     if (err) {
       console.log(err);
       return res.status(500).json({ message: "Internal error from database" });
@@ -180,4 +222,62 @@ app.put("/jobs/:id", (req, res) => {
     res.json({ message: "Job updated" });
   });
 });
-  
+
+        //  SIGN UP PAGE
+  app.post("/signup", async (req,res)=>{
+    const {username,password} = req.body
+
+    if (!username || !password || username.length===0 || password.length===0){
+    return  res.status(400).json({message:"Fill in the missing requirements"})
+    }
+  if (typeof username !== "string" || username.length > 50) {
+  return res.status(400).json({ message: "Username must be text of 50 characters or fewer" });
+}
+    if(typeof password !== "string" || password.length>72 || password.length<8){
+   return res.status(400).json({message:"Your password has exceeded the limit or is to short"})
+    }
+    try{
+      const hashedpassword = await bcrypt.hash(password,10)
+    db.query("INSERT INTO users (username,password) VALUES (?,?)",[username,hashedpassword],(err,results)=>{
+      if(err){
+      if (err.code === "ER_DUP_ENTRY"){
+    return  res.status(409).json({message:"Username is already taken"})
+      }
+         console.log(err);
+  return res.status(500).json({ message: "Internal error from database" }); 
+    }
+     return res.status(201).json({id:results.insertId,username})  
+    })}
+    catch (error) {
+    console.log(error);
+    res.status(500).json({ message: "Something went wrong" });
+  }
+  })
+          //  LOGIN
+  app.post("/login", (req,res)=>{
+     const {username,password} = req.body
+     if(!username || !password || typeof username !== "string" || typeof password !== "string"){
+   return   res.status(400).json({message:"Fill in the missing fields or put it in "})
+     }
+     db.query("SELECT id,username,password FROM users WHERE username = ?",[username], async (err,results)=>{
+      console.log(err);
+        if (err){
+      return res.status(500).json({message:"Internal error from database"})
+        }
+       if (results.length ===0){
+     return   res.status(401).json({message:"Invalid Username or Password"})
+       }
+       try{
+         const match = await bcrypt.compare(password,results[0].password)
+         if(!match){
+     return   res.status(401).json({message:"Incorrect username or Password"})
+         }
+       const token = jwt.sign({id:results[0].id},process.env.JWT_SECRET,{expiresIn: "1h"})
+       res.json({token})
+       }
+       catch (error){
+        console.log(error);
+        res.status(500).json({message:"Something went Wrong"})
+       }
+     })
+  })
