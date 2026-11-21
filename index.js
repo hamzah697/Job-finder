@@ -20,12 +20,14 @@ const db = mysql.createPool({
   ssl: process.env.DB_SSL === "true" ? { rejectUnauthorized: true } : undefined,
   connectionLimit: 5,
 });
-db.connect((err) => {
+db.getConnection((err, connection) => {
   if (err) {
-    console.log("Database connection failed:", err.message);
+    console.error("Database connection failed:", err.message);
     return;
   }
-  console.log("Connected to MySQL");
+
+  console.log("Connected to TiDB successfully");
+  connection.release();
 });
 
 const checkAuth = (req, res, next) => {
@@ -57,7 +59,6 @@ app.get("/", (req, res) => {
     res.send("App is running!")
 });
 
-import rateLimit from "express-rate-limit";
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -105,7 +106,7 @@ app.post("/demo", async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 app.get("/jobs", checkAuth, (req, res) => {
