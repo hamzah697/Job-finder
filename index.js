@@ -105,9 +105,11 @@ app.post("/demo", async (req, res) => {
     res.status(500).json({ message: "Something went wrong" });
   }
 });
+ const PORT = process.env.PORT || 8080;
 
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Server running on port ${PORT}`);
+});
 
 app.get("/jobs", checkAuth, (req, res) => {
   db.query(
