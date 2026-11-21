@@ -4,16 +4,22 @@ import mysql from "mysql2";
 import "dotenv/config";
 import bcrypt, { compare } from "bcrypt"
 import  jwt  from "jsonwebtoken";
+import crypto from "crypto"
+import rateLimit from "express-rate-limit";
 const app = express();
 app.use(express.json());
-app.use(cors())
-const db = mysql.createConnection({
+app.set("trust proxy", 1);
+app.use(cors({ origin: [process.env.FRONTEND_URL, "http://localhost:3000"] }));
+const db = mysql.createPool({
   host: process.env.DB_HOST,
+  port: process.env.DB_PORT || 3306,
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
+  dateStrings: true,
+  ssl: process.env.DB_SSL === "true" ? { rejectUnauthorized: true } : undefined,
+  connectionLimit: 5,
 });
-
 db.connect((err) => {
   if (err) {
     console.log("Database connection failed:", err.message);
@@ -51,9 +57,56 @@ app.get("/", (req, res) => {
     res.send("App is running!")
 });
 
-app.listen(5000, () => {
-    console.log("Server is running on port 5000");
-})
+import rateLimit from "express-rate-limit";
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 20,
+  message: { message: "Too many attempts. Please try again in a few minutes." },
+});
+app.use(["/login", "/signup", "/demo"], authLimiter);
+app.post("/demo", async (req, res) => {
+  try {
+    const username = "guest_" + crypto.randomBytes(4).toString("hex");
+    const hash = await bcrypt.hash(crypto.randomBytes(16).toString("hex"), 10);
+
+    db.query("INSERT INTO users (username, password) VALUES (?, ?)", [username, hash], (err, result) => {
+      if (err) {
+        console.log(err);
+        return res.status(500).json({ message: "Could not start the demo" });
+      }
+      const userId = result.insertId;
+      const daysAgo = (n) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
+      const samples = [
+        ["Northwind Labs", "Frontend Developer", "Remote", "React, Next.js, Tailwind", 150000, 2, "Interview", daysAgo(2)],
+        ["Fieldnote", "React Developer Intern", "Karachi", "React, CSS", null, 0, "Applied", daysAgo(3)],
+        ["Brightloop", "Full-Stack Engineer", "Lahore", "Node, Express, MySQL", 220000, 3, "Assessment", daysAgo(5)],
+        ["Kiln & Co", "Junior Web Developer", "Remote", "HTML, CSS, JavaScript", 90000, 1, "Saved", daysAgo(6)],
+        ["Harbor Systems", "Backend Intern", "Islamabad", "Node, SQL", null, 0, "Rejected", daysAgo(9)],
+        ["Pinecrest", "Frontend Intern", "Remote", "React, Tailwind", null, 0, "Offer", daysAgo(12)],
+      ].map((row) => [...row, userId]);
+
+      db.query(
+        "INSERT INTO jobs (company, role, location, skills, salary, experience, status, date_applied, user_id) VALUES ?",
+        [samples],
+        (err2) => {
+          if (err2) {
+            console.log(err2);
+            return res.status(500).json({ message: "Could not start the demo" });
+          }
+          const token = jwt.sign({ id: userId }, process.env.JWT_SECRET, { expiresIn: "2h" });
+          res.json({ token, username: "Guest" });
+        }
+      );
+    });
+  } catch (error) {
+    console.log(error);
+    res.status(500).json({ message: "Something went wrong" });
+  }
+});
+
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 app.get("/jobs", checkAuth, (req, res) => {
   db.query(
@@ -230,7 +283,7 @@ app.put("/jobs/:id", checkAuth, (req, res) => {
     if (!username || !password || username.length===0 || password.length===0){
     return  res.status(400).json({message:"Fill in the missing requirements"})
     }
-  if (typeof username !== "string" || username.length > 50) {
+  if (typeof username !== "string" || username.length > 26) {
   return res.status(400).json({ message: "Username must be text of 50 characters or fewer" });
 }
     if(typeof password !== "string" || password.length>72 || password.length<8){
@@ -273,7 +326,7 @@ app.put("/jobs/:id", checkAuth, (req, res) => {
      return   res.status(401).json({message:"Incorrect username or Password"})
          }
        const token = jwt.sign({id:results[0].id},process.env.JWT_SECRET,{expiresIn: "1h"})
-       res.json({token})
+   res.json({ token, username: results[0].username });
        }
        catch (error){
         console.log(error);
